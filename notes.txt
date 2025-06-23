@@ -1,0 +1,20 @@
+PINHOLE CAMERA FORMULA
+which relates an object’s real-world width, its width in pixels, and the camera's focal length. here's the simple idea:
+
+🔷 formula used:
+distance = (real_width × focal_length) / pixel_width
+
+🔹 in this project:
+real_width = 2.5 meters (assumed average width of a car)
+
+focal_length = 300 (a fixed tuning value based on camera setup)
+
+pixel_width = width of the detected bounding box of the vehicle
+
+🔹 what happens:
+yolo detects the vehicle and gives its bounding box.
+
+we take the width of that box (in pixels).
+
+apply the formula above to calculate the estimated distance in meters.
+
