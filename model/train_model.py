@@ -1,53 +1,51 @@
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-import joblib
 import os
+import joblib
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
 
-# === 1. Load the updated CSV ===
-log_file = "logs/decisions.csv"
-if not os.path.exists(log_file):
-    print("❌ decisions.csv not found.")
+# === 1. Load data ===
+csv_path = "logs/decisions.csv"
+if not os.path.exists(csv_path):
+    print("❌ CSV file not found.")
     exit()
 
-df = pd.read_csv(log_file)
+df = pd.read_csv(csv_path)
 
-# === 2. Drop incomplete rows ===
-df.dropna(inplace=True)
+# === 2. Drop rows with missing or invalid values ===
+df = df.dropna()
+df = df[df["left_distance"] >= 0]
+df = df[df["right_distance"] >= 0]
 
-# === 3. Encode categorical columns ===
-encoders = {}
-for col in ["left_vehicle", "right_vehicle", "road", "decision"]:
-    le = LabelEncoder()
-    df[col] = le.fit_transform(df[col])
-    encoders[col] = le
+# === 3. Encode categorical labels ===
+le_vehicle = LabelEncoder()
+le_road = LabelEncoder()
+le_decision = LabelEncoder()
 
-# === 4. Feature columns ===
-features = [
-    "left_vehicle", "right_vehicle",
+df["left_vehicle_enc"] = le_vehicle.fit_transform(df["left_vehicle"])
+df["right_vehicle_enc"] = le_vehicle.transform(df["right_vehicle"])
+df["road_enc"] = le_road.fit_transform(df["road"])
+df["decision_enc"] = le_decision.fit_transform(df["decision"])
+
+# === 4. Prepare feature matrix X and target y ===
+X = df[[
+    "left_vehicle_enc", "right_vehicle_enc",
     "left_distance", "right_distance",
     "slope_diff", "left_slope", "right_slope",
-    "road"
-]
-X = df[features]
-y = df["decision"]
+    "road_enc"
+]].astype(float)
 
-# === 5. Train/test split ===
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
+y = df["decision_enc"]
 
-# === 6. Train RandomForest ===
+# === 5. Train the model ===
 model = RandomForestClassifier(n_estimators=100, random_state=42)
-model.fit(X_train, y_train)
+model.fit(X, y)
 
-# === 7. Evaluate ===
-acc = model.score(X_test, y_test)
-print(f"✅ Model trained — Accuracy: {acc * 100:.2f}%")
-
-# === 8. Save model and encoders ===
+# === 6. Save model and encoders ===
 os.makedirs("model", exist_ok=True)
-joblib.dump(model, "model/model.pkl")
-joblib.dump(encoders, "model/encoders.pkl")
-print("📦 Saved: model/model.pkl and model/encoders.pkl")
+joblib.dump(model, "model/traffic_priority_model.pkl")
+joblib.dump(le_vehicle, "model/vehicle_encoder.pkl")
+joblib.dump(le_road, "model/road_encoder.pkl")
+joblib.dump(le_decision, "model/decision_encoder.pkl")
+
+print("✅ Model training complete and saved.")
