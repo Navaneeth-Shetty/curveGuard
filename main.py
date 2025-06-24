@@ -1,153 +1,158 @@
 import cv2
 import numpy as np
 import os
-import csv
-from datetime import datetime
-from sensors.slope_estimator import get_slope
-from sensors.weather_sensor import estimate_road_condition
+import time
+import platform
+import threading
 
-# === YOLOv3 Config ===
-cfg_path = "yolov3/yolov3.cfg"
-weights_path = "yolov3/yolov3.weights"
-names_path = "yolov3/coco.names"
+# === cross-platform beep ===
+def continuous_beep(stop_event):
+    if platform.system() == "Windows":
+        import winsound
+        while not stop_event.is_set():
+            winsound.Beep(1000, 300)
+            time.sleep(0.2)
+    elif platform.system() == "Linux" or platform.system() == "Darwin":
+        while not stop_event.is_set():
+            os.system("play -nq -t alsa synth 0.3 sine 1000")
+    else:
+        pass
 
-if not all(os.path.exists(p) for p in [cfg_path, weights_path, names_path]):
-    print("❌ YOLO files missing.")
-    exit()
+# === yolo setup ===
+cfg = "yolov3/yolov3.cfg"
+weights = "yolov3/yolov3.weights"
+names = "yolov3/coco.names"
+net = cv2.dnn.readNet(weights, cfg)
+net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
 
-net = cv2.dnn.readNet(weights_path, cfg_path)
-with open(names_path, "r") as f:
+with open(names, "r") as f:
     classes = [line.strip() for line in f.readlines()]
-layer_names = net.getUnconnectedOutLayersNames()
+layers = net.getUnconnectedOutLayersNames()
 
 def estimate_distance(pixel_width, real_width=2.5, focal_length=300):
-    if pixel_width <= 0:
-        return -1
+    if pixel_width <= 0: return -1
     return round((real_width * focal_length) / pixel_width, 2)
 
-def detect_vehicle_and_distance(frame, draw=True):
-    blob = cv2.dnn.blobFromImage(frame, 1/255.0, (416, 416), swapRB=True, crop=False)
+def detect_vehicle(frame, prev_dist, last_time):
+    blob = cv2.dnn.blobFromImage(cv2.resize(frame, (416, 416)), 1/255, (416, 416), swapRB=True)
     net.setInput(blob)
-    outs = net.forward(layer_names)
+    outs = net.forward(layers)
     h, w = frame.shape[:2]
+
     for out in outs:
-        for detection in out:
-            scores = detection[5:]
+        for det in out:
+            scores = det[5:]
             class_id = np.argmax(scores)
             conf = scores[class_id]
             label = classes[class_id]
             if conf > 0.5 and label in ["car", "bus", "truck"]:
-                center_x, center_y, bw, bh = (detection[0:4] * np.array([w, h, w, h])).astype(int)
-                x = int(center_x - bw / 2)
-                y = int(center_y - bh / 2)
-                dist = estimate_distance(bw)
-                if draw:
-                    cv2.rectangle(frame, (x, y), (x + bw, y + bh), (0, 255, 0), 2)
-                    cv2.putText(frame, f"{label} {dist}m", (x, y - 5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                return label, dist
-    return "none", -1
+                cx, cy, bw, bh = det[0:4]
+                x = int((cx - bw / 2) * w)
+                y = int((cy - bh / 2) * h)
+                bw_px = int(bw * w)
+                bh_px = int(bh * h)
+                dist = estimate_distance(bw_px)
 
-def set_light(decision):
-    if decision == "left":
-        print("🔴 LEFT RED | 🟢 RIGHT GREEN")
-    elif decision == "right":
-        print("🟢 LEFT GREEN | 🔴 RIGHT RED")
-    else:
-        print("🟢 BOTH GREEN")
-    return decision
+                now = time.time()
+                dt = now - last_time if last_time else 1e-6
+                speed = 0
+                if dist != -1 and prev_dist != -1 and dt > 0:
+                    speed = max(0, (prev_dist - dist) / dt * 3.6)  # m/s to km/h
 
-left_alt = 320
-right_alt = 300
-temp = 18
-humidity = 85
+                # draw
+                cv2.rectangle(frame, (x, y), (x + bw_px, y + bh_px), (0, 255, 0), 2)
+                cv2.putText(frame, f"{label} {dist:.1f}m", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(frame, f"{speed:.1f} km/h", (x, y + bh_px + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 255), 2)
 
-cap_left = cv2.VideoCapture("videos/demo2.mp4")
-cap_right = cv2.VideoCapture("videos/demo2.mp4")
+                return label, dist, speed, now
+
+    return "none", -1, 0, time.time()
+
+def is_approaching(current, previous):
+    return current != -1 and previous != -1 and current < previous
+
+# === camera ===
+cap_left = cv2.VideoCapture(1)
+cap_right = cv2.VideoCapture(0)
 if not cap_left.isOpened() or not cap_right.isOpened():
-    print("❌ One or both camera feeds failed to open.")
+    print("❌ Feed failed.")
     exit()
 
-log_file = "logs/decisions.csv"
-os.makedirs("logs", exist_ok=True)
-if not os.path.exists(log_file):
-    with open(log_file, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "frame", "timestamp", "left_vehicle", "right_vehicle",
-            "left_distance", "right_distance",
-            "slope_diff", "left_slope", "right_slope",
-            "road", "decision"
-        ])
+signal = "green"
+lock = False
+timer = time.time()
+hold_time = {"green": 5, "yellow": 2, "red": 4}
+last_printed = ""
+beep_thread = None
+beep_stop = threading.Event()
 
-frame_id = 0
+prev_left_dist = prev_right_dist = -1
+last_left_time = last_right_time = 0
+
 while True:
-    ret_left, frame_left = cap_left.read()
-    ret_right, frame_right = cap_right.read()
-    if not ret_left or not ret_right:
-        print("✅ End of stream or capture failed.")
+    ret1, fL = cap_left.read()
+    ret2, fR = cap_right.read()
+    if not ret1 or not ret2:
         break
 
-    frame_id += 1
-    if frame_id % 30 != 0:
-        continue
+    labelL, distL, speedL, last_left_time = detect_vehicle(fL, prev_left_dist, last_left_time)
+    labelR, distR, speedR, last_right_time = detect_vehicle(fR, prev_right_dist, last_right_time)
 
-    left_vehicle, left_dist = detect_vehicle_and_distance(frame_left)
-    right_vehicle, right_dist = detect_vehicle_and_distance(frame_right)
-    slope_diff = get_slope(left_alt, right_alt)
-    road_condition = estimate_road_condition(temp, humidity)
+    nearL = 0 < distL < 12
+    nearR = 0 < distR < 12
+    approachL = is_approaching(distL, prev_left_dist)
+    approachR = is_approaching(distR, prev_right_dist)
+    prev_left_dist = distL
+    prev_right_dist = distR
 
-    if left_dist == -1 and right_dist == -1:
-        decision = "both"
-    elif left_dist == -1:
-        decision = "right"
-    elif right_dist == -1:
-        decision = "left"
-    elif abs(left_dist - right_dist) < 2:
-        decision = "both"
-    elif left_dist < right_dist:
-        decision = "left"
+    if not lock:
+        if nearL and nearR:
+            new_signal = "red"
+        elif (nearL and approachR) or (nearR and approachL):
+            new_signal = "yellow"
+        elif nearL or nearR:
+            new_signal = "green"
+        else:
+            new_signal = "green"
+
+        if new_signal != signal:
+            signal = new_signal
+            timer = time.time()
+            lock = True
     else:
-        decision = "right"
+        if time.time() - timer > hold_time[signal]:
+            lock = False
 
-    decision_str = set_light(decision)
+    # continuous beep for red
+    if signal == "red":
+        if not beep_thread or not beep_thread.is_alive():
+            beep_stop.clear()
+            beep_thread = threading.Thread(target=continuous_beep, args=(beep_stop,))
+            beep_thread.start()
+    else:
+        if beep_thread and beep_thread.is_alive():
+            beep_stop.set()
 
-    print(f"🍉 Frame {frame_id}")
-    print(f"🚗 Left: {left_vehicle} @ {left_dist}m | 🚙 Right: {right_vehicle} @ {right_dist}m")
-    print(f"Decision: {decision_str}")
+    # print signal icon only if changed
+    icons = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
+    if signal != last_printed:
+        print(icons[signal])
+        last_printed = signal
 
-    with open(log_file, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            frame_id,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            left_vehicle,
-            right_vehicle,
-            left_dist,
-            right_dist,
-            slope_diff,
-            left_alt,
-            right_alt,
-            road_condition,
-            decision_str
-        ])
+    fL = cv2.resize(fL, (640, 360))
+    fR = cv2.resize(fR, (640, 360))
+    combined = np.hstack((fL, fR))
+    col = {"green": (0,255,0), "yellow": (0,255,255), "red": (0,0,255)}[signal]
+    cv2.rectangle(combined, (10, 10), (240, 70), (0, 0, 0), -1)
+    cv2.putText(combined, f"{signal.upper()} SIGNAL", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, 2)
 
-    screen_res = 1280, 720
-    margin = 20
-    win_w = screen_res[0] - 2 * margin
-    win_h = screen_res[1] - 2 * margin
-    frame_w = win_w // 2
-    frame_h = win_h
-
-    frame_left = cv2.resize(frame_left, (frame_w, frame_h))
-    frame_right = cv2.resize(frame_right, (frame_w, frame_h))
-    combined = np.hstack((frame_left, frame_right))
-    padded = cv2.copyMakeBorder(combined, margin, margin, margin, margin, cv2.BORDER_CONSTANT, value=(0, 0, 0))
-    cv2.imshow("📺 Dual View", padded)
-
-    if cv2.waitKey(1) == 27:
+    cv2.imshow("🚦 Real-Time CCTV", combined)
+    if cv2.waitKey(1) & 0xFF == 27:
         break
 
+# cleanup
+beep_stop.set()
 cap_left.release()
 cap_right.release()
 cv2.destroyAllWindows()
