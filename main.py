@@ -74,7 +74,7 @@ def is_approaching(current, previous):
 
 # === camera ===
 cap_left = cv2.VideoCapture(1)
-cap_right = cv2.VideoCapture(0)
+cap_right = cv2.VideoCapture('videos/demo3.mp4')
 if not cap_left.isOpened() or not cap_right.isOpened():
     print("❌ Feed failed.")
     exit()
@@ -93,8 +93,13 @@ last_left_time = last_right_time = 0
 while True:
     ret1, fL = cap_left.read()
     ret2, fR = cap_right.read()
-    if not ret1 or not ret2:
+    if not ret1:
         break
+    if not ret2:
+        cap_right.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ret2, fR = cap_right.read()
+        if not ret2:
+            break
 
     labelL, distL, speedL, last_left_time = detect_vehicle(fL, prev_left_dist, last_left_time)
     labelR, distR, speedR, last_right_time = detect_vehicle(fR, prev_right_dist, last_right_time)
