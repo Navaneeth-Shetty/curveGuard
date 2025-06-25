@@ -9,7 +9,7 @@ import threading
 
 # --- Import the traffic logic from your logic file ---
 # Note: This assumes your logic file is named 'priority_logic_a.py' as in your code.
-from priority_logic_a import get_signal_with_slope_priority, get_signal_no_slope
+from priority_logic_b import get_signal_with_slope_priority, get_signal_no_slope
 
 # --- Configuration ---
 cfg = "yolov3/yolov3.cfg"
