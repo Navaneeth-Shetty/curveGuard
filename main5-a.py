@@ -3,7 +3,7 @@ import cv2, numpy as np, time, winsound
 # ---------- constants ----------
 CFG, WTS, NAMES = "yolov3/yolov3.cfg", "yolov3/yolov3.weights", "yolov3/coco.names"
 FW, FH, CURVE_RAD = 1280, 720, 500
-CURVE_CX, METERS_PER_PIXEL = FW // 2, 0.05
+CURVE_CX, METERS_PER_PIXEL = FW // 2, 0
 DANGER, CAUTION = 30, 40
 HEAVY_VEHICLES = {"bus", "truck"}
 LIGHT_VEHICLES = {"car", "motorbike", "bicycle"}
@@ -92,7 +92,7 @@ def x_velocity(hist):
 
 # ---------- main ----------
 def main():
-    cap=cv2.VideoCapture(1); tracker=Tracker(); last_beep=0; signal="GREEN"
+    cap=cv2.VideoCapture('videos/demo2.mp4'); tracker=Tracker(); last_beep=0; signal="GREEN"
     while True:
         ok,frame=cap.read()
         if not ok: break
