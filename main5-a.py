@@ -92,7 +92,7 @@ def x_velocity(hist):
 
 # ---------- main ----------
 def main():
-    cap=cv2.VideoCapture('videos/demo2.mp4'); tracker=Tracker(); last_beep=0; signal="GREEN"
+    cap=cv2.VideoCapture(1); tracker=Tracker(); last_beep=0; signal="GREEN"
     while True:
         ok,frame=cap.read()
         if not ok: break
