@@ -3,7 +3,7 @@ from datetime import datetime
 
 cam_idx      = 1            # virtual cam1
 interval_s   = 1.0          # seconds between saves
-save_dir     = "dataset/truck"
+save_dir     = "dataset/car"
 os.makedirs(save_dir, exist_ok=True)
 
 cap   = cv2.VideoCapture(cam_idx)
