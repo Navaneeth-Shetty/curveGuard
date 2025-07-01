@@ -6,3 +6,5 @@ dataset_yolo/
 runs/
 /yolov8n.pt
 /yolov5s.pt
+/yolov5s.onnx
+/yolov5x.onnx
