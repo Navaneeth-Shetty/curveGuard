@@ -1,7 +1,4 @@
-import cv2
-import numpy as np
-import time
-import math
+import cv2, numpy as np, time, math
 from dataclasses import dataclass, field
 from ultralytics import YOLO
 
@@ -31,7 +28,7 @@ class Config:
         "car": 1.8, "truck": 2.5, "bus": 2.5, "motorbike": 0.7, "obj": 1.8
     })
 
-    def _post_init_(self):
+    def __post_init__(self):
         self.cx = self.frame_width // 2
 
     @property
@@ -41,41 +38,27 @@ class Config:
 # ───────────── UTILITY FUNCTIONS ─────────────
 def estimate_distance(width_px, cls, cfg):
     real_width = cfg.vehicle_widths.get(cls, 1.8)
-    if width_px == 0:
-        return float("inf")
-    return (real_width * cfg.focal_length_px) / width_px
+    return float("inf") if width_px == 0 else (real_width * cfg.focal_length_px) / width_px
 
 def bbox_iou(a, b):
     xa, ya, wa, ha = a
     xb, yb, wb, hb = b
-    xa2, ya2 = xa + wa, ya + ha
-    xb2, yb2 = xb + wb, yb + hb
-    inter_x1 = max(xa, xb)
-    inter_y1 = max(ya, yb)
-    inter_x2 = min(xa2, xb2)
-    inter_y2 = min(ya2, yb2)
-    iw = max(0, inter_x2 - inter_x1)
-    ih = max(0, inter_y2 - inter_y1)
-    inter_area = iw * ih
-    union = wa * ha + wb * hb - inter_area
-    return inter_area / union if union > 0 else 0
+    xa2, ya2, xb2, yb2 = xa + wa, ya + ha, xb + wb, yb + hb
+    inter_x1, inter_y1 = max(xa, xb), max(ya, yb)
+    inter_x2, inter_y2 = min(xa2, xb2), min(ya2, yb2)
+    iw, ih = max(0, inter_x2 - inter_x1), max(0, inter_y2 - inter_y1)
+    inter_area, union = iw * ih, wa * ha + wb * hb - iw * ih
+    return inter_area / union if union else 0
 
 def beep(cfg):
-    if CAN_BEEP:
-        winsound.Beep(cfg.beep_freq, cfg.beep_dur)
-    else:
-        print("\a", end="", flush=True)
+    winsound.Beep(cfg.beep_freq, cfg.beep_dur) if CAN_BEEP else print("\a", end="", flush=True)
 
 # ───────────── TRACKER ─────────────
 class Tracker:
-    def _init_(self, cfg):
+    def __init__(self, cfg):
         self.cfg = cfg
-        self.cents = {}
-        self.boxes = {}
-        self.names = {}
-        self.lost = {}
+        self.cents, self.boxes, self.names, self.lost, self.last_positions = {}, {}, {}, {}, {}
         self.next_id = 0
-        self.last_positions = {}
 
     def _pairwise(self, a, b):
         return np.linalg.norm(a[:, None] - b[None, :], axis=2)
@@ -101,10 +84,7 @@ class Tracker:
             oid = oids[r]
             if r in used_r or c in used_c:
                 continue
-            if (
-                D[r, c] > cfg.centroid_match_px
-                or bbox_iou(self.boxes[oid], boxes[c]) < cfg.iou_match_thresh
-            ):
+            if D[r, c] > cfg.centroid_match_px or bbox_iou(self.boxes[oid], boxes[c]) < cfg.iou_match_thresh:
                 continue
             self.last_positions[oid] = self.cents[oid]
             self.cents[oid], self.boxes[oid], self.names[oid] = cents[c], boxes[c], names[c]
@@ -131,11 +111,10 @@ class Tracker:
 
 # ───────────── DETECTOR (YOLOv8) ─────────────
 class YOLOv8Detector:
-    def _init_(self, cfg):
-        self.cfg = cfg
-        self.model = YOLO("yolov8n.pt")
+    def __init__(self, cfg):
+        self.cfg, self.model = cfg, YOLO("yolov8n.pt")
 
-    def _call_(self, frame):
+    def __call__(self, frame):
         result = self.model(frame, verbose=False)[0]
         boxes, cents, names = [], [], []
         for box in result.boxes:
@@ -156,69 +135,43 @@ def main(cfg):
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
 
-    detector = YOLOv8Detector(cfg)
-    tracker = Tracker(cfg)
-    last_beep_time = 0
-    state = "green"
-    colors = {"green": (0, 255, 0), "yellow": (0, 255, 255), "red": (0, 0, 255)}
+    detector, tracker = YOLOv8Detector(cfg), Tracker(cfg)
+    last_beep_time, state, colors = 0, "green", {"green": (0, 255, 0), "yellow": (0, 255, 255), "red": (0, 0, 255)}
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-
         frame = cv2.resize(frame, (cfg.frame_width, cfg.frame_height))
         cents, boxes, names = detector(frame)
         tracker.update(cents, boxes, names)
 
-        distances = {
-            oid: estimate_distance(tracker.boxes[oid][2], tracker.names[oid], cfg)
-            for oid in tracker.cents
-        }
-
+        distances = {oid: estimate_distance(tracker.boxes[oid][2], tracker.names[oid], cfg) for oid in tracker.cents}
         left_ids = {oid for oid, (x, _) in tracker.cents.items() if x < cfg.cx}
-        right_ids = set(tracker.cents.keys()) - left_ids
+        right_ids = set(tracker.cents) - left_ids
+        near_left, near_right = min([distances[i] for i in left_ids], default=None), min([distances[i] for i in right_ids], default=None)
+        gap = (near_left + near_right + cfg.curve_length_m) if near_left and near_right else None
 
-        near_left = min([distances[i] for i in left_ids], default=None)
-        near_right = min([distances[i] for i in right_ids], default=None)
-
-        gap = (near_left + near_right + cfg.curve_length_m
-               if near_left is not None and near_right is not None else None)
-
-        # Direction check: if moving away, go yellow
         moving_away = False
-        if len(left_ids) == 1 and len(right_ids) == 1:
-            l_id = list(left_ids)[0]
-            r_id = list(right_ids)[0]
+        if len(left_ids) == len(right_ids) == 1:
+            l_id, r_id = next(iter(left_ids)), next(iter(right_ids))
             lx_prev, _ = tracker.last_positions.get(l_id, tracker.cents[l_id])
             rx_prev, _ = tracker.last_positions.get(r_id, tracker.cents[r_id])
-            lx_now, _ = tracker.cents[l_id]
-            rx_now, _ = tracker.cents[r_id]
-            moving_away = (lx_now < lx_prev) and (rx_now > rx_prev)
+            lx_now, rx_now = tracker.cents[l_id][0], tracker.cents[r_id][0]
+            moving_away = lx_now < lx_prev and rx_now > rx_prev
 
-        if len(left_ids | right_ids) == 1:
-            state = "green"
-        elif gap is not None and gap < cfg.min_safe_gap_m and not moving_away:
-            state = "red"
-        else:
-            state = "yellow"
-
+        state = "green" if len(left_ids | right_ids) == 1 else "red" if gap and gap < cfg.min_safe_gap_m and not moving_away else "yellow"
         if state == "red" and time.time() - last_beep_time > cfg.beep_cooldown:
-            beep(cfg)
-            last_beep_time = time.time()
+            beep(cfg); last_beep_time = time.time()
 
         for oid in tracker.cents:
             x, y, w, h = tracker.boxes[oid]
-            dist = distances[oid]
-            col = (255, 0, 0) if oid in left_ids else (0, 255, 255)
+            dist, col = distances[oid], (255, 0, 0) if oid in left_ids else (0, 255, 255)
             cv2.rectangle(frame, (x, y), (x + w, y + h), col, 2)
-            cv2.putText(frame, f"{tracker.names[oid]}-{oid} {dist:.1f}m", (x, y - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
+            cv2.putText(frame, f"{tracker.names[oid]}-{oid} {dist:.1f}m", (x, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
 
         if gap:
-            cv2.putText(frame, f"Gap: {gap:.1f} m", (20, cfg.frame_height - 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
+            cv2.putText(frame, f"Gap: {gap:.1f} m", (20, cfg.frame_height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         cv2.line(frame, (cfg.cx, 0), (cfg.cx, cfg.frame_height), (200, 200, 200), 1)
         cv2.rectangle(frame, (10, 10), (150, 60), colors[state], -1)
         cv2.putText(frame, state.upper(), (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
@@ -227,8 +180,7 @@ def main(cfg):
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
-    cap.release()
-    cv2.destroyAllWindows()
+    cap.release(); cv2.destroyAllWindows()
 
 # ───────────── ENTRY POINT ─────────────
 if __name__ == "__main__":
