@@ -8,7 +8,6 @@ try:
 except ImportError:
     CAN_BEEP = False
 
-# ───────────── CONFIGURATION ─────────────
 @dataclass
 class Config:
     camera_index: int = 0
@@ -19,8 +18,8 @@ class Config:
     caution_zone_px: int = 250
     min_safe_gap_m: float = 40.0
     history_len: int = 5
-    centroid_match_px: int = 100
-    iou_match_thresh: float = 0.3
+    centroid_match_px: int = 75
+    iou_match_thresh: float = 0.5
     beep_freq: int = 1000
     beep_dur: int = 200
     beep_cooldown: float = 2.0
@@ -35,7 +34,6 @@ class Config:
     def vehicle_classes(self):
         return {"car", "truck", "bus", "motorbike"}
 
-# ───────────── UTILITY FUNCTIONS ─────────────
 def estimate_distance(width_px, cls, cfg):
     real_width = cfg.vehicle_widths.get(cls, 1.8)
     return float("inf") if width_px == 0 else (real_width * cfg.focal_length_px) / width_px
@@ -53,7 +51,6 @@ def bbox_iou(a, b):
 def beep(cfg):
     winsound.Beep(cfg.beep_freq, cfg.beep_dur) if CAN_BEEP else print("\a", end="", flush=True)
 
-# ───────────── TRACKER ─────────────
 class Tracker:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -109,10 +106,10 @@ class Tracker:
         self.last_positions[self.next_id] = c
         self.next_id += 1
 
-# ───────────── DETECTOR (YOLOv8) ─────────────
 class YOLOv8Detector:
     def __init__(self, cfg):
-        self.cfg, self.model = cfg, YOLO("yolov8n.pt")
+        self.cfg = cfg
+        self.model = YOLO("yolov8n.pt")
 
     def __call__(self, frame):
         result = self.model(frame, verbose=False)[0]
@@ -129,59 +126,103 @@ class YOLOv8Detector:
             names.append(cls_name)
         return cents, boxes, names
 
-# ───────────── MAIN LOOP ─────────────
 def main(cfg):
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture('videos/demo2.mp4')
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
 
-    detector, tracker = YOLOv8Detector(cfg), Tracker(cfg)
-    last_beep_time, state, colors = 0, "green", {"green": (0, 255, 0), "yellow": (0, 255, 255), "red": (0, 0, 255)}
+    detector = YOLOv8Detector(cfg)
+    tracker = Tracker(cfg)
+    last_beep_time = 0
+    state = "green"
+    colors = {"green": (0, 255, 0), "yellow": (0, 255, 255), "red": (0, 0, 255)}
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+
         frame = cv2.resize(frame, (cfg.frame_width, cfg.frame_height))
-        cents, boxes, names = detector(frame)
+
+        # get detections
+        raw_cents, raw_boxes, raw_names = detector(frame)
+
+        # filter duplicate boxes by IoU
+        filtered = []
+        for i, box_i in enumerate(raw_boxes):
+            keep = True
+            for j, box_j in enumerate(raw_boxes):
+                if i != j and raw_names[i] == raw_names[j]:
+                    if bbox_iou(box_i, box_j) > 0.6:
+                        if i > j:
+                            keep = False
+                            break
+            if keep:
+                filtered.append((raw_cents[i], raw_boxes[i], raw_names[i]))
+
+        cents, boxes, names = zip(*filtered) if filtered else ([], [], [])
         tracker.update(cents, boxes, names)
 
-        distances = {oid: estimate_distance(tracker.boxes[oid][2], tracker.names[oid], cfg) for oid in tracker.cents}
+        distances = {
+            oid: estimate_distance(tracker.boxes[oid][2], tracker.names[oid], cfg)
+            for oid in tracker.cents
+        }
+
         left_ids = {oid for oid, (x, _) in tracker.cents.items() if x < cfg.cx}
-        right_ids = set(tracker.cents) - left_ids
-        near_left, near_right = min([distances[i] for i in left_ids], default=None), min([distances[i] for i in right_ids], default=None)
-        gap = (near_left + near_right + cfg.curve_length_m) if near_left and near_right else None
+        right_ids = set(tracker.cents.keys()) - left_ids
+
+        near_left = min([distances[i] for i in left_ids], default=None)
+        near_right = min([distances[i] for i in right_ids], default=None)
+
+        gap = (near_left + near_right + cfg.curve_length_m
+               if near_left is not None and near_right is not None else None)
 
         moving_away = False
-        if len(left_ids) == len(right_ids) == 1:
-            l_id, r_id = next(iter(left_ids)), next(iter(right_ids))
+        if len(left_ids) == 1 and len(right_ids) == 1:
+            l_id = list(left_ids)[0]
+            r_id = list(right_ids)[0]
             lx_prev, _ = tracker.last_positions.get(l_id, tracker.cents[l_id])
             rx_prev, _ = tracker.last_positions.get(r_id, tracker.cents[r_id])
-            lx_now, rx_now = tracker.cents[l_id][0], tracker.cents[r_id][0]
-            moving_away = lx_now < lx_prev and rx_now > rx_prev
+            lx_now, _ = tracker.cents[l_id]
+            rx_now, _ = tracker.cents[r_id]
+            moving_away = (lx_now < lx_prev) and (rx_now > rx_prev)
 
-        state = "green" if len(left_ids | right_ids) == 1 else "red" if gap and gap < cfg.min_safe_gap_m and not moving_away else "yellow"
+        if len(left_ids | right_ids) == 1:
+            state = "green"
+        elif gap is not None and gap < cfg.min_safe_gap_m and not moving_away:
+            state = "red"
+        else:
+            state = "yellow"
+
         if state == "red" and time.time() - last_beep_time > cfg.beep_cooldown:
-            beep(cfg); last_beep_time = time.time()
+            beep(cfg)
+            last_beep_time = time.time()
 
         for oid in tracker.cents:
             x, y, w, h = tracker.boxes[oid]
-            dist, col = distances[oid], (255, 0, 0) if oid in left_ids else (0, 255, 255)
+            dist = distances[oid]
+            col = (255, 0, 0) if oid in left_ids else (0, 255, 255)
             cv2.rectangle(frame, (x, y), (x + w, y + h), col, 2)
-            cv2.putText(frame, f"{tracker.names[oid]}-{oid} {dist:.1f}m", (x, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
+            cv2.putText(frame, f"{tracker.names[oid]}-{oid} {dist:.1f}m", (x, y - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
 
         if gap:
-            cv2.putText(frame, f"Gap: {gap:.1f} m", (20, cfg.frame_height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.putText(frame, f"Gap: {gap:.1f} m", (20, cfg.frame_height - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
         cv2.line(frame, (cfg.cx, 0), (cfg.cx, cfg.frame_height), (200, 200, 200), 1)
-        cv2.rectangle(frame, (10, 10), (150, 60), colors[state], -1)
-        cv2.putText(frame, state.upper(), (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
+
+        if left_ids or right_ids:
+            cv2.rectangle(frame, (10, 10), (150, 60), colors[state], -1)
+            cv2.putText(frame, state.upper(), (20, 45),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
 
         cv2.imshow("CurveGuard - YOLOv8", frame)
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
-    cap.release(); cv2.destroyAllWindows()
+    cap.release()
+    cv2.destroyAllWindows()
 
-# ───────────── ENTRY POINT ─────────────
 if __name__ == "__main__":
     main(Config())
