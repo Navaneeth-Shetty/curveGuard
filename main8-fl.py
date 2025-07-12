@@ -38,6 +38,17 @@ def estimate_distance(width_px, cls, cfg):
     real_width = cfg.vehicle_widths.get(cls, 1.8)
     return float("inf") if width_px == 0 else (real_width * cfg.focal_length_px) / width_px
 
+def estimate_focal_length(frame, known_distance_m=5.0, known_width_m=1.8, class_name="car"):
+    model = YOLO("yolov8n.pt")
+    result = model(frame, verbose=False)[0]
+    for box in result.boxes:
+        if result.names[int(box.cls[0])] == class_name:
+            x1, _, x2, _ = map(int, box.xyxy[0])
+            px_width = x2 - x1
+            if px_width > 0:
+                return int((px_width * known_distance_m) / known_width_m)
+    return None
+
 def bbox_iou(a, b):
     xa, ya, wa, ha = a
     xb, yb, wb, hb = b
@@ -127,9 +138,19 @@ class YOLOv8Detector:
         return cents, boxes, names
 
 def main(cfg):
-    cap = cv2.VideoCapture('videos/demo2.mp4')
+    source = 0  # change to 'videos/demo2.mp4' or 1 as needed
+    cap = cv2.VideoCapture(source)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
+
+    # auto-calculate focal length if new device
+    if not (isinstance(source, int) and source == 1) and not (isinstance(source, str) and source.startswith("videos/")):
+        ret, frame = cap.read()
+        if ret:
+            focal = estimate_focal_length(frame)
+            if focal:
+                cfg.focal_length_px = focal
+                print(f"[INFO] Focal length set to: {focal}px")
 
     detector = YOLOv8Detector(cfg)
     tracker = Tracker(cfg)
@@ -141,13 +162,9 @@ def main(cfg):
         ret, frame = cap.read()
         if not ret:
             break
-
         frame = cv2.resize(frame, (cfg.frame_width, cfg.frame_height))
 
-        # get detections
         raw_cents, raw_boxes, raw_names = detector(frame)
-
-        # filter duplicate boxes by IoU
         filtered = []
         for i, box_i in enumerate(raw_boxes):
             keep = True
