@@ -153,7 +153,7 @@ class MotionDetector:
 
 # ───────────────────── main loop ───────────────────────
 def main(cfg: Config):
-    cap = cv2.VideoCapture('videos/demo2.mp4')
+    cap = cv2.VideoCapture('http://192.168.105.91:4747/video')
     if not cap.isOpened():
         sys.exit(f"could not open camera {cfg.camera_index}")
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)

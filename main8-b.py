@@ -1,6 +1,5 @@
 import cv2, numpy as np, time, math
 from dataclasses import dataclass, field
-from ultralytics import YOLO
 
 try:
     import winsound
@@ -23,6 +22,7 @@ class Config:
     beep_freq: int = 1000
     beep_dur: int = 200
     beep_cooldown: float = 2.0
+    onnx_model_path: str = "yolov8n.onnx"
     vehicle_widths: dict[str, float] = field(default_factory=lambda: {
         "car": 1.8, "truck": 2.5, "bus": 2.5, "motorbike": 0.7, "obj": 1.8
     })
@@ -106,32 +106,65 @@ class Tracker:
         self.last_positions[self.next_id] = c
         self.next_id += 1
 
-class YOLOv8Detector:
+class YOLOv8ONNXDetector:
     def __init__(self, cfg):
+        import onnxruntime as ort
         self.cfg = cfg
-        self.model = YOLO("yolov8n.pt")
+        self.session = ort.InferenceSession(cfg.onnx_model_path, providers=['CPUExecutionProvider'])
+        self.input_name = self.session.get_inputs()[0].name
+        self.img_size = 640
 
-    def __call__(self, frame):
-        result = self.model(frame, verbose=False)[0]
+    def preprocess(self, frame):
+        img = cv2.resize(frame, (self.img_size, self.img_size))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img.astype(np.float32) / 255.0
+        img = np.transpose(img, (2, 0, 1))[np.newaxis, ...]
+        return img
+
+    def postprocess(self, output, orig_shape):
+        detections = output[0]
+        if detections.ndim == 3:
+            detections = np.squeeze(detections, axis=0)
+
+        h, w, _ = orig_shape
+        scale_x, scale_y = w / self.img_size, h / self.img_size
         boxes, cents, names = [], [], []
-        for box in result.boxes:
-            cls_id = int(box.cls[0])
-            cls_name = result.names[cls_id]
+        for det in detections:
+            if len(det) < 6:
+                continue
+            x1, y1, x2, y2, conf, cls_id = det[:6]
+            x1 = float(np.squeeze(x1))
+            y1 = float(np.squeeze(y1))
+            x2 = float(np.squeeze(x2))
+            y2 = float(np.squeeze(y2))
+            conf = float(np.squeeze(conf))
+            cls_id = int(np.squeeze(cls_id))
+            if conf < 0.25:
+                continue
+            cls_name = ["car", "truck", "bus", "motorbike", "obj"][cls_id] if cls_id < 5 else f"id{cls_id}"
             if cls_name not in self.cfg.vehicle_classes:
                 continue
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            w, h = x2 - x1, y2 - y1
-            boxes.append([x1, y1, w, h])
-            cents.append((x1 + w // 2, y1 + h // 2))
+            x1 = int(x1 * scale_x)
+            y1 = int(y1 * scale_y)
+            x2 = int(x2 * scale_x)
+            y2 = int(y2 * scale_y)
+            w_box, h_box = x2 - x1, y2 - y1
+            boxes.append([x1, y1, w_box, h_box])
+            cents.append((x1 + w_box // 2, y1 + h_box // 2))
             names.append(cls_name)
         return cents, boxes, names
+
+    def __call__(self, frame):
+        input_tensor = self.preprocess(frame)
+        outputs = self.session.run(None, {self.input_name: input_tensor})
+        return self.postprocess(outputs, frame.shape)
 
 def main(cfg):
     cap = cv2.VideoCapture('http://192.168.105.91:4747/video')
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
 
-    detector = YOLOv8Detector(cfg)
+    detector = YOLOv8ONNXDetector(cfg)
     tracker = Tracker(cfg)
     last_beep_time = 0
     state = "green"
@@ -143,11 +176,8 @@ def main(cfg):
             break
 
         frame = cv2.resize(frame, (cfg.frame_width, cfg.frame_height))
-
-        # get detections
         raw_cents, raw_boxes, raw_names = detector(frame)
 
-        # filter duplicate boxes by IoU
         filtered = []
         for i, box_i in enumerate(raw_boxes):
             keep = True
@@ -217,7 +247,7 @@ def main(cfg):
             cv2.putText(frame, state.upper(), (20, 45),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
 
-        cv2.imshow("CurveGuard - YOLOv8", frame)
+        cv2.imshow("CurveGuard - YOLOv8 ONNX", frame)
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
