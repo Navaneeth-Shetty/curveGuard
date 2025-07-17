@@ -10,3 +10,4 @@ runs/
 /yolov5x.onnx
 yolov3/
 /yolov8n.onnx
+*.png
