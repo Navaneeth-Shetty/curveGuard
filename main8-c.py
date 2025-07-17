@@ -11,7 +11,6 @@ try:
 except ImportError:
     _CAN_BEEP = False
 
-# ───────────────────── configuration ─────────────────────
 @dataclass
 class Config:
     camera_index: int = 0
@@ -26,7 +25,7 @@ class Config:
     history_len: int = 5
     focal_length_px: int = 800
     curve_length_m: float = 3.0
-    min_safe_gap_m: float = 30.0  # safe distance
+    min_safe_gap_m: float = 30.0
     beep_freq: int = 1000
     beep_dur: int = 200
     beep_cooldown: float = 2.0
@@ -40,7 +39,6 @@ class Config:
     def vehicle_classes(self):
         return {"obj"}
 
-# ───────────────────── helpers ──────────────────────────
 def bbox_iou(a, b):
     x1a, y1a, wa, ha = a
     x2a, y2a = x1a + wa, y1a + ha
@@ -62,7 +60,6 @@ def beep(cfg: Config):
     else:
         print("\a", end="", flush=True)
 
-# ───────────────────── tracker ──────────────────────────
 class Tracker:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -126,7 +123,6 @@ class Tracker:
         self.lost[self.next_id] = 0
         self.next_id += 1
 
-# ───────────────────── moving‑object detector ───────────
 class MotionDetector:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -151,7 +147,6 @@ class MotionDetector:
             names.append("obj")
         return cents, boxes, names
 
-# ───────────────────── main loop ───────────────────────
 def main(cfg: Config):
     cap = cv2.VideoCapture(1)
     if not cap.isOpened():
@@ -185,7 +180,6 @@ def main(cfg: Config):
             else None
         )
 
-        # ── changed logic: green only when exactly one vehicle is present ──
         if (nleft + nright) == 1:
             state = "green"
         elif gap and gap < cfg.min_safe_gap_m:
@@ -211,16 +205,44 @@ def main(cfg: Config):
                 col,
                 2,
             )
+
         if gap:
+            gap_color = (0, 255, 255) if state != "red" else (0, 0, 255)
             cv2.putText(
                 frame,
-                f"gap {gap:.1f} m",
+                f"Gap: {gap:.1f} m",
                 (20, cfg.frame_height - 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 255) if state != "red" else (0, 0, 255),
+                0.9,
+                gap_color,
                 2,
             )
+
+        if state == "red":
+            cv2.circle(frame, (cfg.cx, 40), 20, (0, 0, 255), -1)
+            cv2.putText(
+                frame,
+                "ALERT: Unsafe Gap!",
+                (cfg.cx - 150, 80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 0, 255),
+                2,
+            )
+        elif state == "yellow":
+            cv2.circle(frame, (cfg.cx, 40), 20, (0, 255, 255), -1)
+            cv2.putText(
+                frame,
+                "Drive with caution",
+                (cfg.cx - 160, 80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 255),
+                2,
+            )
+        elif state == "green":
+            cv2.circle(frame, (cfg.cx, 40), 20, (0, 255, 0), -1)
+
         cv2.rectangle(frame, (10, 10), (150, 60), colours[state], -1)
         cv2.putText(
             frame,
@@ -237,6 +259,5 @@ def main(cfg: Config):
     cap.release()
     cv2.destroyAllWindows()
 
-# ───────────────── entry point ────────────────────────
 if __name__ == "__main__":
     main(Config())
