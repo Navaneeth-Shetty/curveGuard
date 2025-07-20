@@ -1,5 +1,9 @@
-#YOLO CNN VISUALIZATION
-[![Watch Demo](https://img.youtube.com/vi/v5OVGIeGnMk/0.jpg)](https://youtu.be/v5OVGIeGnMk?si=ua0S-4tZMSDk9cP7)
+## 🧠 YOLO CNN Visualization
+
+As a vehicle passes through each convolutional layer of the YOLO model, the network extracts spatial features like edges, shapes, and motion context. This enables real-time understanding of the car's position, speed, and classification across frames.
+
+[![Watch YOLO Visualization](https://img.youtube.com/vi/v5OVGIeGnMk/0.jpg)](https://youtu.be/v5OVGIeGnMk?si=ua0S-4tZMSDk9cP7)
+
 > 🎥 Click the image or [watch the demo](https://youtu.be/v5OVGIeGnMk?si=ua0S-4tZMSDk9cP7) on YouTube
 
 
