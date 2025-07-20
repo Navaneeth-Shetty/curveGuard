@@ -1,3 +1,8 @@
+#YOLO CNN VISUALIZATION
+[watch visualization video](https://youtu.be/v5OVGIeGnMk?si=ua0S-4tZMSDk9cP7)
+> 🎥 Click the image or [watch the demo](https://youtu.be/v5OVGIeGnMk?si=ua0S-4tZMSDk9cP7) on YouTube
+
+
 # 🚨 CurveGuard – Crash Detection Cases
 
 AI-powered system for real-time crash risk detection on curved roads using dual camera input, visual warnings, and logic-based decision-making.
