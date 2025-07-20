@@ -127,7 +127,7 @@ class YOLOv8Detector:
         return cents, boxes, names
 
 def main(cfg):
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture('videos/demo2.mp4')
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
 

@@ -160,7 +160,7 @@ class YOLOv8ONNXDetector:
         return self.postprocess(outputs, frame.shape)
 
 def main(cfg):
-    cap = cv2.VideoCapture('http://192.168.105.91:4747/video')
+    cap = cv2.VideoCapture('videos/demo2.mp4')
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
 

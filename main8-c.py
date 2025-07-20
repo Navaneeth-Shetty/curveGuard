@@ -25,7 +25,7 @@ class Config:
     history_len: int = 5
     focal_length_px: int = 800
     curve_length_m: float = 3.0
-    min_safe_gap_m: float = 30.0
+    min_safe_gap_m: float = 40.0
     beep_freq: int = 1000
     beep_dur: int = 200
     beep_cooldown: float = 2.0
