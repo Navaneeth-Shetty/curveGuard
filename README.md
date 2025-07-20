@@ -1,5 +1,5 @@
 #YOLO CNN VISUALIZATION
-[watch visualization video](https://youtu.be/v5OVGIeGnMk?si=ua0S-4tZMSDk9cP7)
+[![Watch Demo](https://img.youtube.com/vi/v5OVGIeGnMk/maxresdefault.jpg)](https://youtu.be/v5OVGIeGnMk?si=ua0S-4tZMSDk9cP7)
 > 🎥 Click the image or [watch the demo](https://youtu.be/v5OVGIeGnMk?si=ua0S-4tZMSDk9cP7) on YouTube
 
 
