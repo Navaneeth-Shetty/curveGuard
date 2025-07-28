@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# curve‑road safety ai — real-gap logic between vehicles
+# curve‑road safety ai — yolov8 metre‑based vehicle gap logic
 
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -11,7 +11,8 @@ try:
 except ImportError:
     _CAN_BEEP = False
 
-# ───────────────────── configuration ─────────────────────
+from ultralytics import YOLO
+
 @dataclass
 class Config:
     camera_index: int = 0
@@ -26,21 +27,22 @@ class Config:
     history_len: int = 5
     focal_length_px: int = 800
     curve_length_m: float = 3.0
-    min_safe_gap_m: float = 30.0
+    min_safe_gap_m: float = 40.0
     beep_freq: int = 1000
     beep_dur: int = 200
     beep_cooldown: float = 2.0
     min_motion_area: int = 1500
-    vehicle_widths: dict[str, float] = field(default_factory=lambda: {"obj": 1.8})
+    vehicle_widths: dict[str, float] = field(default_factory=lambda: {
+        "car": 1.8, "truck": 2.5, "bus": 2.5, "motorbike": 0.8
+    })
 
     def __post_init__(self):
         self.cx = self.frame_width // 2
 
     @property
     def vehicle_classes(self):
-        return {"obj"}
+        return {"car", "truck", "bus", "motorbike"}
 
-# ───────────────────── helpers ──────────────────────────
 def bbox_iou(a, b):
     x1a, y1a, wa, ha = a
     x2a, y2a = x1a + wa, y1a + ha
@@ -62,7 +64,6 @@ def beep(cfg: Config):
     else:
         print("\a", end="", flush=True)
 
-# ───────────────────── tracker ──────────────────────────
 class Tracker:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -70,7 +71,6 @@ class Tracker:
         self.boxes = {}
         self.names = {}
         self.lost = {}
-        self.prev_dists = {}
         self.next_id = 0
 
     def _pair(self, a, b):
@@ -82,7 +82,7 @@ class Tracker:
             for oid in list(self.lost):
                 self.lost[oid] += 1
                 if self.lost[oid] > cfg.history_len:
-                    for d in (self.cents, self.boxes, self.names, self.lost, self.prev_dists):
+                    for d in (self.cents, self.boxes, self.names, self.lost):
                         d.pop(oid, None)
             return
         if not self.cents:
@@ -114,7 +114,7 @@ class Tracker:
             if r not in used_r:
                 self.lost[oid] += 1
                 if self.lost[oid] > cfg.history_len:
-                    for d in (self.cents, self.boxes, self.names, self.lost, self.prev_dists):
+                    for d in (self.cents, self.boxes, self.names, self.lost):
                         d.pop(oid, None)
         for c in range(len(cents)):
             if c not in used_c:
@@ -125,48 +125,37 @@ class Tracker:
         self.boxes[self.next_id] = b
         self.names[self.next_id] = n
         self.lost[self.next_id] = 0
-        self.prev_dists[self.next_id] = None
         self.next_id += 1
 
-# ───────────────────── moving‑object detector ───────────
-class MotionDetector:
+class YOLODetector:
     def __init__(self, cfg: Config):
+        self.model = YOLO("yolov8n.pt")
         self.cfg = cfg
-        self.bg = cv2.createBackgroundSubtractorMOG2(
-            history=500, varThreshold=16, detectShadows=False
-        )
 
     def __call__(self, frame):
-        fg = self.bg.apply(frame)
-        fg = cv2.medianBlur(fg, 5)
-        _, fg = cv2.threshold(fg, 127, 255, cv2.THRESH_BINARY)
-        fg = cv2.dilate(fg, None, iterations=2)
-        contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        results = self.model(frame, conf=self.cfg.conf_thresh, iou=self.cfg.iou_thresh_nms)[0]
         boxes, cents, names = [], [], []
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < self.cfg.min_motion_area:
+        for box in results.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cls_id = int(box.cls[0])
+            name = self.model.names[cls_id]
+            if name not in self.cfg.vehicle_classes:
                 continue
-            x, y, w, h = cv2.boundingRect(cnt)
-            boxes.append([x, y, w, h])
-            cents.append((x + w // 2, y + h // 2))
-            names.append("obj")
+            w, h = x2 - x1, y2 - y1
+            boxes.append([x1, y1, w, h])
+            cents.append((x1 + w // 2, y1 + h // 2))
+            names.append(name)
         return cents, boxes, names
 
-# ───────────────────── main loop ───────────────────────
 def main(cfg: Config):
-    cap = cv2.VideoCapture('')
+    cap = cv2.VideoCapture('videos/demo2.mp4')
     if not cap.isOpened():
         sys.exit(f"could not open camera {cfg.camera_index}")
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
-    detect, tracker = MotionDetector(cfg), Tracker(cfg)
+    detect, tracker = YOLODetector(cfg), Tracker(cfg)
     last_beep, state = 0.0, "green"
     colours = {"green": (0, 255, 0), "yellow": (0, 255, 255), "red": (0, 0, 255)}
-
-    min_gap = None
-    prev_gap = {}
-
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -174,7 +163,6 @@ def main(cfg: Config):
         frame = cv2.resize(frame, (cfg.frame_width, cfg.frame_height))
         cents, boxes, names = detect(frame)
         tracker.update(cents, boxes, names)
-
         dist = {
             oid: estimate_distance(tracker.boxes[oid][2], tracker.names[oid], cfg)
             for oid in tracker.cents
@@ -183,50 +171,18 @@ def main(cfg: Config):
         left, right = set(), set()
         for oid, (x, _) in tracker.cents.items():
             (left if x < cfg.cx else right).add(oid)
-
         nleft, nright = len(left), len(right)
         near_left = min([dist[i] for i in left], default=None)
         near_right = min([dist[i] for i in right], default=None)
-
-        min_gap = float("inf")
-        any_pair_drawn = False
-
-        if near_left is not None and near_right is not None:
-            if near_left <= 20 and near_right <= 20:
-                for lid in left:
-                    for rid in right:
-                        if dist[lid] <= 20 and dist[rid] <= 20:
-                            c1, c2 = np.array(tracker.cents[lid]), np.array(tracker.cents[rid])
-                            px_gap = np.linalg.norm(c1 - c2)
-                            px_per_meter = (cfg.focal_length_px) / cfg.vehicle_widths["obj"]
-                            gap = (px_gap / px_per_meter) * 15
-
-                            pair_key = (lid, rid)
-                            if pair_key in prev_gap and gap > prev_gap[pair_key]:
-                                continue  # skip if vehicles are moving apart
-                            prev_gap[pair_key] = gap
-
-                            if gap < min_gap:
-                                min_gap = gap
-                            any_pair_drawn = True
-                            mid = ((c1 + c2) // 2).astype(int)
-                            cv2.line(frame, tuple(c1), tuple(c2), (255, 0, 255), 2)
-                            cv2.putText(
-                                frame,
-                                f"{gap:.1f}m",
-                                tuple(mid),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.6,
-                                (255, 0, 255),
-                                2,
-                            )
-
-            else:
-                min_gap = near_left + near_right + cfg.curve_length_m - 10
+        gap = (
+            near_left + near_right + cfg.curve_length_m
+            if (near_left is not None and near_right is not None)
+            else None
+        )
 
         if (nleft + nright) == 1:
             state = "green"
-        elif any_pair_drawn and min_gap < cfg.min_safe_gap_m:
+        elif gap and gap < cfg.min_safe_gap_m:
             state = "red"
         else:
             state = "yellow"
@@ -238,26 +194,55 @@ def main(cfg: Config):
         cv2.line(frame, (cfg.cx, 0), (cfg.cx, cfg.frame_height), (200, 200, 200), 1)
         for oid, box in tracker.boxes.items():
             x, y, w, h = box
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+            col = (255, 0, 0)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), col, 2)
             cv2.putText(
                 frame,
                 f"{oid}:{dist[oid]:.1f}m",
                 (x, y - 8),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
-                (255, 0, 0),
+                col,
                 2,
             )
-        if any_pair_drawn:
+
+        if gap:
+            gap_color = (0, 255, 255) if state != "red" else (0, 0, 255)
             cv2.putText(
                 frame,
-                f"min gap {min_gap:.1f} m",
+                f"Gap: {gap:.1f} m",
                 (20, cfg.frame_height - 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 255) if state != "red" else (0, 0, 255),
+                0.9,
+                gap_color,
                 2,
             )
+
+        if state == "red":
+            cv2.circle(frame, (cfg.cx, 40), 20, (0, 0, 255), -1)
+            cv2.putText(
+                frame,
+                "ALERT: Unsafe Gap!",
+                (cfg.cx - 150, 80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 0, 255),
+                2,
+            )
+        elif state == "yellow":
+            cv2.circle(frame, (cfg.cx, 40), 20, (0, 255, 255), -1)
+            cv2.putText(
+                frame,
+                "Drive with caution",
+                (cfg.cx - 160, 80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 255),
+                2,
+            )
+        elif state == "green":
+            cv2.circle(frame, (cfg.cx, 40), 20, (0, 255, 0), -1)
+
         cv2.rectangle(frame, (10, 10), (150, 60), colours[state], -1)
         cv2.putText(
             frame,
@@ -271,10 +256,8 @@ def main(cfg: Config):
         cv2.imshow("curve‑road traffic monitor", frame)
         if cv2.waitKey(1) & 0xFF == 27:
             break
-
     cap.release()
     cv2.destroyAllWindows()
 
-# ───────────────── entry point ────────────────────────
 if __name__ == "__main__":
     main(Config())

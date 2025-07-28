@@ -70,7 +70,6 @@ class Tracker:
         self.boxes = {}
         self.names = {}
         self.lost = {}
-        self.prev_dists = {}
         self.next_id = 0
 
     def _pair(self, a, b):
@@ -82,7 +81,7 @@ class Tracker:
             for oid in list(self.lost):
                 self.lost[oid] += 1
                 if self.lost[oid] > cfg.history_len:
-                    for d in (self.cents, self.boxes, self.names, self.lost, self.prev_dists):
+                    for d in (self.cents, self.boxes, self.names, self.lost):
                         d.pop(oid, None)
             return
         if not self.cents:
@@ -114,7 +113,7 @@ class Tracker:
             if r not in used_r:
                 self.lost[oid] += 1
                 if self.lost[oid] > cfg.history_len:
-                    for d in (self.cents, self.boxes, self.names, self.lost, self.prev_dists):
+                    for d in (self.cents, self.boxes, self.names, self.lost):
                         d.pop(oid, None)
         for c in range(len(cents)):
             if c not in used_c:
@@ -125,7 +124,6 @@ class Tracker:
         self.boxes[self.next_id] = b
         self.names[self.next_id] = n
         self.lost[self.next_id] = 0
-        self.prev_dists[self.next_id] = None
         self.next_id += 1
 
 # ───────────────────── moving‑object detector ───────────
@@ -155,7 +153,7 @@ class MotionDetector:
 
 # ───────────────────── main loop ───────────────────────
 def main(cfg: Config):
-    cap = cv2.VideoCapture('')
+    cap = cv2.VideoCapture('http://10.197.129.136:4747/video')
     if not cap.isOpened():
         sys.exit(f"could not open camera {cfg.camera_index}")
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
@@ -163,9 +161,6 @@ def main(cfg: Config):
     detect, tracker = MotionDetector(cfg), Tracker(cfg)
     last_beep, state = 0.0, "green"
     colours = {"green": (0, 255, 0), "yellow": (0, 255, 255), "red": (0, 0, 255)}
-
-    min_gap = None
-    prev_gap = {}
 
     while True:
         ok, frame = cap.read()
@@ -187,46 +182,25 @@ def main(cfg: Config):
         nleft, nright = len(left), len(right)
         near_left = min([dist[i] for i in left], default=None)
         near_right = min([dist[i] for i in right], default=None)
-
-        min_gap = float("inf")
-        any_pair_drawn = False
-
+#TODO: CHANGES HERE
+        gap = None
         if near_left is not None and near_right is not None:
             if near_left <= 20 and near_right <= 20:
-                for lid in left:
-                    for rid in right:
-                        if dist[lid] <= 20 and dist[rid] <= 20:
-                            c1, c2 = np.array(tracker.cents[lid]), np.array(tracker.cents[rid])
-                            px_gap = np.linalg.norm(c1 - c2)
-                            px_per_meter = (cfg.focal_length_px) / cfg.vehicle_widths["obj"]
-                            gap = (px_gap / px_per_meter) * 15
-
-                            pair_key = (lid, rid)
-                            if pair_key in prev_gap and gap > prev_gap[pair_key]:
-                                continue  # skip if vehicles are moving apart
-                            prev_gap[pair_key] = gap
-
-                            if gap < min_gap:
-                                min_gap = gap
-                            any_pair_drawn = True
-                            mid = ((c1 + c2) // 2).astype(int)
-                            cv2.line(frame, tuple(c1), tuple(c2), (255, 0, 255), 2)
-                            cv2.putText(
-                                frame,
-                                f"{gap:.1f}m",
-                                tuple(mid),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.6,
-                                (255, 0, 255),
-                                2,
-                            )
-
+                lid = min(left, key=lambda i: dist[i])
+                rid = min(right, key=lambda i: dist[i])
+                c1, c2 = np.array(tracker.cents[lid]), np.array(tracker.cents[rid])
+                px_gap = np.linalg.norm(c1 - c2)
+                w1, w2 = tracker.boxes[lid][2], tracker.boxes[rid][2]
+                avg_width_px = (w1 + w2) / 2
+                px_per_meter = (cfg.focal_length_px) / cfg.vehicle_widths["obj"]
+                gap = (px_gap / px_per_meter)
+                cv2.line(frame, tuple(c1), tuple(c2), (255, 0, 255), 2)
             else:
-                min_gap = near_left + near_right + cfg.curve_length_m - 10
+                gap = near_left + near_right + cfg.curve_length_m-10
 
         if (nleft + nright) == 1:
             state = "green"
-        elif any_pair_drawn and min_gap < cfg.min_safe_gap_m:
+        elif gap and gap < cfg.min_safe_gap_m:
             state = "red"
         else:
             state = "yellow"
@@ -248,10 +222,10 @@ def main(cfg: Config):
                 (255, 0, 0),
                 2,
             )
-        if any_pair_drawn:
+        if gap:
             cv2.putText(
                 frame,
-                f"min gap {min_gap:.1f} m",
+                f"gap {gap:.1f} m",
                 (20, cfg.frame_height - 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,

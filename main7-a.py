@@ -157,7 +157,7 @@ class YoloDetector:
 def main(cfg: Config):
     os.makedirs("CapturedImages/overspeed/left", exist_ok=True)
     os.makedirs("CapturedImages/overspeed/right", exist_ok=True)
-    cap = cv2.VideoCapture(1)     # use 0 for live camera
+    cap = cv2.VideoCapture('videos/demo2.mp4')     # use 0 for live camera
     if not cap.isOpened(): sys.exit("camera not found")
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
